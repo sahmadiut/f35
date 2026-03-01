@@ -20,33 +20,60 @@ import (
 type Config struct {
 	ResolversFile string
 	Domain        string
+	Proxy         string
+	ProxyUser     string
+	ProxyPass     string
 	Workers       int
 	TestURL       string
 	Timeout       int
 	StartPort     int
+	ClientPath    string
 }
 
 func main() {
 	cfg := Config{}
-	flag.StringVar(&cfg.ResolversFile, "resolvers", "", "Path to resolvers file")
-	flag.StringVar(&cfg.Domain, "domain", "", "Tunnel domain (e.g. ns.domain.tld)")
-	flag.IntVar(&cfg.Workers, "workers", 20, "Concurrent workers")
-	flag.StringVar(&cfg.TestURL, "test-url", "http://www.google.com/gen_204", "HTTP URL to test through tunnel")
-	flag.IntVar(&cfg.Timeout, "timeout", 5, "HTTP request timeout in seconds")
-	flag.IntVar(&cfg.StartPort, "start-port", 40000, "Starting local port for tunnel listeners")
+	flag.StringVar(&cfg.ResolversFile, "r", "", "Path to resolvers file")
+	flag.StringVar(&cfg.Domain, "d", "", "Tunnel domain (e.g. ns.domain.tld)")
+	flag.StringVar(&cfg.Proxy, "x", "http", "Proxy protocol for listener: http|https|socks5|socks5h")
+	flag.StringVar(&cfg.ProxyUser, "U", "", "Optional proxy username")
+	flag.StringVar(&cfg.ProxyPass, "P", "", "Optional proxy password")
+	flag.IntVar(&cfg.Workers, "w", 20, "Concurrent workers")
+	flag.StringVar(&cfg.TestURL, "u", "http://www.google.com/gen_204", "HTTP URL to test through tunnel")
+	flag.IntVar(&cfg.Timeout, "t", 5, "HTTP request timeout in seconds")
+	flag.IntVar(&cfg.StartPort, "l", 40000, "Starting local port for tunnel listeners")
 	flag.Parse()
+	cfg.Proxy = strings.ToLower(strings.TrimSpace(cfg.Proxy))
 
 	if cfg.ResolversFile == "" || cfg.Domain == "" {
 		flag.Usage()
 		os.Exit(1)
 	}
+	switch cfg.Proxy {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		fmt.Fprintf(os.Stderr, "error: -x must be one of: http, https, socks5, socks5h\n")
+		os.Exit(1)
+	}
+	if cfg.ProxyPass != "" && cfg.ProxyUser == "" {
+		fmt.Fprintf(os.Stderr, "error: -P requires -U\n")
+		os.Exit(1)
+	}
+	clientPath, err := exec.LookPath("slipstream-client")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: slipstream-client not found in PATH")
+		os.Exit(1)
+	}
+	cfg.ClientPath = clientPath
 
 	resolvers, err := loadResolvers(cfg.ResolversFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-
+	if len(resolvers) == 0 {
+		fmt.Fprintf(os.Stderr, "error: no valid resolvers found in %s (expected IP:PORT per line)\n", cfg.ResolversFile)
+		os.Exit(1)
+	}
 	jobs := make(chan string, len(resolvers))
 	for _, r := range resolvers {
 		jobs <- r
@@ -98,7 +125,14 @@ func loadResolvers(path string) ([]string, error) {
 }
 
 func scan(localPort int, cfg *Config, jobs <-chan string) {
-	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", localPort))
+	proxyURL, _ := url.Parse(fmt.Sprintf("%s://127.0.0.1:%d", cfg.Proxy, localPort))
+	if cfg.ProxyUser != "" {
+		if cfg.ProxyPass != "" {
+			proxyURL.User = url.UserPassword(cfg.ProxyUser, cfg.ProxyPass)
+		} else {
+			proxyURL.User = url.User(cfg.ProxyUser)
+		}
+	}
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyURL(proxyURL),
@@ -118,7 +152,7 @@ func scan(localPort int, cfg *Config, jobs <-chan string) {
 }
 
 func tryResolver(resolver string, localPort int, cfg *Config, client *http.Client) {
-	cmd := exec.Command("slipstream-client",
+	cmd := exec.Command(cfg.ClientPath,
 		"--tcp-listen-host", "127.0.0.1",
 		"--tcp-listen-port", strconv.Itoa(localPort),
 		"--resolver", resolver,

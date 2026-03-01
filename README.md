@@ -44,24 +44,33 @@ One `IP:PORT` per line:
 ## Usage
 
 ```
-  -domain string
+  -P string
+        Optional proxy password
+  -U string
+        Optional proxy username
+  -d string
         Tunnel domain (e.g. ns.domain.tld)
-  -resolvers string
-        Path to resolvers file
-  -start-port int
+  -l int
         Starting local port for tunnel listeners (default 40000)
-  -test-url string
-        HTTP URL to test through tunnel (default "http://www.google.com/gen_204")
-  -timeout int
+  -r string
+        Path to resolvers file
+  -t int
         HTTP request timeout in seconds (default 5)
-  -workers int
+  -u string
+        HTTP URL to test through tunnel (default "http://www.google.com/gen_204")
+  -w int
         Concurrent workers (default 20)
+  -x string
+        Proxy protocol for listener: http|https|socks5|socks5h (default "http")
 ```
 
 Example:
 
 ```bash
-./f35 -resolvers resolvers.txt -domain ns.domain.tld -workers 100
+./f35 -r resolvers.txt -d ns.domain.tld -w 100 -x http
+./f35 -r resolvers.txt -d ns.domain.tld -w 100 -x socks5
+./f35 -r resolvers.txt -d ns.domain.tld -w 100 -x socks5h
+./f35 -r resolvers.txt -d ns.domain.tld -w 100 -x http -U user -P pass
 ```
 
 ---
@@ -80,5 +89,5 @@ Unhealthy resolvers produce no output.
 Pipe stdout directly into another tool or file:
 
 ```bash
-./f35 -resolvers resolvers.txt -domain ns.domain.tld | tee results.txt
+./f35 -r resolvers.txt -d ns.domain.tld | tee results.txt
 ```
