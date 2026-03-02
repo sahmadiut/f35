@@ -71,7 +71,7 @@ func main() {
 		os.Exit(1)
 	}
 	if len(resolvers) == 0 {
-		fmt.Fprintf(os.Stderr, "error: no valid resolvers found in %s (expected IP:PORT per line)\n", cfg.ResolversFile)
+		fmt.Fprintf(os.Stderr, "error: no valid resolvers found in %s (expected IP or IP:PORT per line)\n", cfg.ResolversFile)
 		os.Exit(1)
 	}
 	jobs := make(chan string, len(resolvers))
@@ -107,21 +107,35 @@ func loadResolvers(path string) ([]string, error) {
 		if line == "" {
 			continue
 		}
-		host, portStr, err := net.SplitHostPort(line)
-		if err != nil || net.ParseIP(host) == nil {
+		entry, ok := parseResolver(line)
+		if !ok {
 			continue
 		}
-		p, err := strconv.Atoi(portStr)
-		if err != nil || p < 1 || p > 65535 {
-			continue
-		}
-		entry := fmt.Sprintf("%s:%d", host, p)
 		if !seen[entry] {
 			seen[entry] = true
 			out = append(out, entry)
 		}
 	}
 	return out, sc.Err()
+}
+
+func parseResolver(line string) (string, bool) {
+	if ip := net.ParseIP(line); ip != nil {
+		return net.JoinHostPort(ip.String(), "53"), true
+	}
+
+	host, portStr, err := net.SplitHostPort(line)
+	if err != nil {
+		return "", false
+	}
+	if net.ParseIP(host) == nil {
+		return "", false
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil || p < 1 || p > 65535 {
+		return "", false
+	}
+	return fmt.Sprintf("%s:%d", host, p), true
 }
 
 func scan(localPort int, cfg *Config, jobs <-chan string) {

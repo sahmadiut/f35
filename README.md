@@ -24,10 +24,12 @@ This makes F35 a **true end-to-end resolver scanner**, not a synthetic or partia
 
 ## Resolver List Format
 
-One `IP:PORT` per line:
+One resolver per line:
+- `IP` (defaults to port `53`)
+- `IP:PORT`
 
 ```
-1.1.1.1:53
+1.1.1.1
 8.8.8.8:53
 ```
 
@@ -81,7 +83,7 @@ Healthy resolvers are printed to **stdout** as they are discovered, one per line
 
 ```
 1.2.3.4:53 342ms
-5.6.7.8:5353 89ms
+5.6.7.8:53 89ms
 ```
 
 Unhealthy resolvers produce no output.
