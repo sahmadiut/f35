@@ -118,11 +118,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: no valid resolvers found in %s (expected IP or IP:PORT per line)\n", cfg.ResolversFile)
 		os.Exit(1)
 	}
-	jobs := make(chan string, len(resolvers))
-	for _, r := range resolvers {
-		jobs <- r
-	}
-	close(jobs)
+	jobs := make(chan string, cfg.Workers*2)
 
 	var wg sync.WaitGroup
 	for i := 0; i < cfg.Workers; i++ {
@@ -132,6 +128,13 @@ func main() {
 			scan(port, &cfg, jobs)
 		}(cfg.StartPort + i)
 	}
+
+	go func() {
+		for _, r := range resolvers {
+			jobs <- r
+		}
+		close(jobs)
+	}()
 
 	wg.Wait()
 }
@@ -183,26 +186,8 @@ func parseResolver(line string) (string, bool) {
 }
 
 func scan(localPort int, cfg *Config, jobs <-chan string) {
-	proxyURL, _ := url.Parse(fmt.Sprintf("%s://127.0.0.1:%d", cfg.Proxy, localPort))
-	if cfg.ProxyUser != "" {
-		if cfg.ProxyPass != "" {
-			proxyURL.User = url.UserPassword(cfg.ProxyUser, cfg.ProxyPass)
-		} else {
-			proxyURL.User = url.User(cfg.ProxyUser)
-		}
-	}
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyURL),
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:      1,
-			IdleConnTimeout:   30 * time.Second,
-			DisableKeepAlives: true,
-		},
-	}
+	proxyURL := buildProxyURL(cfg, localPort)
+	client := buildClient(proxyURL)
 
 	for resolver := range jobs {
 		for attempt := 0; attempt <= cfg.Retries; attempt++ {
@@ -213,8 +198,35 @@ func scan(localPort int, cfg *Config, jobs <-chan string) {
 	}
 }
 
+func buildProxyURL(cfg *Config, localPort int) *url.URL {
+	u := &url.URL{
+		Scheme: cfg.Proxy,
+		Host:   fmt.Sprintf("127.0.0.1:%d", localPort),
+	}
+	if cfg.ProxyUser != "" {
+		if cfg.ProxyPass != "" {
+			u.User = url.UserPassword(cfg.ProxyUser, cfg.ProxyPass)
+		} else {
+			u.User = url.User(cfg.ProxyUser)
+		}
+	}
+	return u
+}
+
+func buildClient(proxyURL *url.URL) *http.Client {
+	return &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			Proxy:             http.ProxyURL(proxyURL),
+			DisableKeepAlives: true,
+		},
+	}
+}
+
 func tryResolver(resolver string, localPort int, cfg *Config, client *http.Client) bool {
-	cmd := &exec.Cmd{}
+	var cmd *exec.Cmd
 	if cfg.Engine == "dnstt" {
 		cmd = exec.Command(cfg.ClientPath,
 			"-udp", resolver,
@@ -261,9 +273,10 @@ func tryResolver(resolver string, localPort int, cfg *Config, client *http.Clien
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 {
-		fmt.Printf("%s %dms\n", resolver, time.Since(start).Milliseconds())
-		return true
+	if _, err = io.Copy(io.Discard, resp.Body); err != nil {
+		return false
 	}
-	return false
+
+	fmt.Printf("%s %dms\n", resolver, time.Since(start).Milliseconds())
+	return true
 }
