@@ -273,10 +273,6 @@ func tryResolver(resolver string, localPort int, cfg *Config, client *http.Clien
 	}
 	defer resp.Body.Close()
 
-	if _, err = io.Copy(io.Discard, resp.Body); err != nil {
-		return false
-	}
-
 	fmt.Printf("%s %dms\n", resolver, time.Since(start).Milliseconds())
 	return true
 }

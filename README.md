@@ -120,7 +120,7 @@ f35 -r resolvers.txt \
 	-w 100 \
 	-x socks5h \
 	-U user -P pass \
-	-u https://speed.cloudflare.com/__down?bytes=100000
+	-u http://www.google.com/gen_204
 ```
 
 ```bash
