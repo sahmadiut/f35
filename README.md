@@ -71,6 +71,7 @@ One resolver per line:
 * A tunnel client in `$PATH`:
   * `dnstt-client` when using `-e dnstt`
   * `slipstream-client` when using `-e slipstream`
+  * or provide an explicit path via `-p`
 * A reachable tunnel server for the selected engine
 * A valid tunnel domain (e.g. `t.example.com`)
 * For DNSTT: server public key via `-k`
@@ -92,6 +93,8 @@ One resolver per line:
         DNSTT public key (required when -e dnstt)
   -l int
         Starting local port for tunnel listeners (default 40000)
+  -p string
+        Explicit path to client binary (optional)
   -r string
         Path to resolvers file
   -R int
@@ -161,7 +164,7 @@ f35 -r resolvers.txt -e dnstt -k YOUR_PUBLIC_KEY -d t.example.com | tee results.
 ## Troubleshooting
 
 - `error: dnstt-client not found in PATH` or `error: slipstream-client not found in PATH`:
-  install the selected engine client or add it to `PATH`.
+  install the selected engine client, add it to `PATH`, or use `-p` to set a full path.
 - `error: -k is required when -e dnstt`:
   pass the DNSTT public key with `-k`.
 - Empty output:
