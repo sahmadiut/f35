@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,17 +23,53 @@ type Config struct {
 	Engine        string
 	ClientPath    string
 	Domain        string
-	PubKey        string
 	ResolversFile string
 	TestURL       string
 	Proxy         string
 	ProxyUser     string
 	ProxyPass     string
+	Args          string
 	Workers       int
 	Retries       int
 	TunnelWait    int
 	Timeout       int
 	StartPort     int
+}
+
+type EngineSpec struct {
+	DefaultBinary        string
+	DefaultArgs          []string
+	InsertArgsBeforeTail bool
+}
+
+var engineSpecs = map[string]EngineSpec{
+	"dnstt": {
+		DefaultBinary: "dnstt-client",
+		DefaultArgs: []string{
+			"-udp", "{resolver}",
+			"{domain}",
+			"{listen}",
+		},
+		InsertArgsBeforeTail: true,
+	},
+	"slipstream": {
+		DefaultBinary: "slipstream-client",
+		DefaultArgs: []string{
+			"--tcp-listen-host", "{listen_host}",
+			"--tcp-listen-port", "{listen_port}",
+			"--resolver", "{resolver}",
+			"--domain", "{domain}",
+			"--keep-alive-interval", "200",
+		},
+	},
+	"vaydns": {
+		DefaultBinary: "vaydns-client",
+		DefaultArgs: []string{
+			"-domain", "{domain}",
+			"-listen", "{listen}",
+			"-udp", "{resolver}",
+		},
+	},
 }
 
 func main() {
@@ -79,10 +116,10 @@ func parseFlags() *Config {
 	c := &Config{}
 
 	flag.StringVar(&c.ResolversFile, "r", "", "Path to file containing resolvers (IP or IP:PORT per line)")
-	flag.StringVar(&c.Engine, "e", "dnstt", "Tunnel engine to use: dnstt|slipstream")
+	flag.StringVar(&c.Engine, "e", "dnstt", fmt.Sprintf("Tunnel engine to use: %s", strings.Join(engineNames(), "|")))
 	flag.StringVar(&c.ClientPath, "p", "", "Explicit path to client binary (optional)")
 	flag.StringVar(&c.Domain, "d", "", "Tunnel domain (e.g., ns.example.com)")
-	flag.StringVar(&c.PubKey, "k", "", "DNSTT public key (required if -e is dnstt)")
+	flag.StringVar(&c.Args, "a", "", "Extra engine CLI args; supports placeholders like {resolver}, {domain}, {listen}")
 	flag.StringVar(&c.TestURL, "u", "http://www.google.com/gen_204", "HTTP URL to test through the tunnel")
 	flag.StringVar(&c.Proxy, "x", "http", "Protocol to use when sending request through the tunnel: http|https|socks5|socks5h")
 	flag.StringVar(&c.ProxyUser, "U", "", "Proxy username (if the tunnel exit requires auth)")
@@ -105,14 +142,15 @@ func validateConfig(cfg *Config) error {
 		return errors.New("-r and -d are required")
 	}
 
-	switch cfg.Engine {
-	case "dnstt":
-		if cfg.PubKey == "" {
-			return errors.New("-k is required for dnstt")
+	spec, ok := engineSpecs[cfg.Engine]
+	if !ok {
+		return fmt.Errorf("-e must be one of: %s", strings.Join(engineNames(), ", "))
+	}
+
+	if cfg.Args != "" {
+		if _, err := splitCommandLine(cfg.Args); err != nil {
+			return fmt.Errorf("invalid -a: %w", err)
 		}
-	case "slipstream":
-	default:
-		return errors.New("-e must be one of: dnstt, slipstream")
 	}
 
 	switch cfg.Proxy {
@@ -145,13 +183,22 @@ func validateConfig(cfg *Config) error {
 	}
 
 	if cfg.ClientPath == "" {
-		path, err := exec.LookPath(cfg.Engine + "-client")
+		path, err := exec.LookPath(spec.DefaultBinary)
 		if err != nil {
-			return fmt.Errorf("binary %s-client not found in PATH; use -p to specify path", cfg.Engine)
+			return fmt.Errorf("binary %s not found in PATH; use -p to specify path", spec.DefaultBinary)
 		}
 		cfg.ClientPath = path
 	}
 	return nil
+}
+
+func engineNames() []string {
+	names := make([]string, 0, len(engineSpecs))
+	for name := range engineSpecs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func loadResolvers(path string) ([]string, error) {
@@ -223,26 +270,12 @@ func worker(port int, cfg *Config, jobs <-chan string) {
 }
 
 func try(resolver string, port int, cfg *Config, client *http.Client) bool {
-	var cmd *exec.Cmd
-	laddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-
-	if cfg.Engine == "dnstt" {
-		cmd = exec.Command(cfg.ClientPath,
-			"-udp", resolver,
-			"-pubkey", cfg.PubKey,
-			cfg.Domain,
-			laddr,
-		)
-	} else {
-		cmd = exec.Command(cfg.ClientPath,
-			"--tcp-listen-host", "127.0.0.1",
-			"--tcp-listen-port", strconv.Itoa(port),
-			"--resolver", resolver,
-			"--domain", cfg.Domain,
-			"--keep-alive-interval", "200",
-		)
+	args, err := buildEngineArgs(cfg, resolver, port)
+	if err != nil {
+		return false
 	}
 
+	cmd := exec.Command(cfg.ClientPath, args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
@@ -274,4 +307,103 @@ func try(resolver string, port int, cfg *Config, client *http.Client) bool {
 
 	fmt.Printf("%s %dms\n", resolver, time.Since(start).Milliseconds())
 	return true
+}
+
+func buildEngineArgs(cfg *Config, resolver string, port int) ([]string, error) {
+	spec := engineSpecs[cfg.Engine]
+	listenAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	extraArgs := []string{}
+	if cfg.Args != "" {
+		var err error
+		extraArgs, err = splitCommandLine(cfg.Args)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	args := make([]string, 0, len(spec.DefaultArgs)+8)
+	if spec.InsertArgsBeforeTail {
+		tailSize := 2
+		if len(spec.DefaultArgs) < tailSize {
+			return nil, errors.New("invalid engine configuration")
+		}
+		args = append(args, spec.DefaultArgs[:len(spec.DefaultArgs)-tailSize]...)
+		args = append(args, extraArgs...)
+		args = append(args, spec.DefaultArgs[len(spec.DefaultArgs)-tailSize:]...)
+	} else {
+		args = append(args, spec.DefaultArgs...)
+		args = append(args, extraArgs...)
+	}
+	return expandPlaceholders(args, placeholderValues(cfg, resolver, port, listenAddr))
+}
+
+func placeholderValues(cfg *Config, resolver string, port int, listenAddr string) map[string]string {
+	return map[string]string{
+		"{resolver}":    resolver,
+		"{domain}":      cfg.Domain,
+		"{listen}":      listenAddr,
+		"{listen_host}": "127.0.0.1",
+		"{listen_port}": strconv.Itoa(port),
+	}
+}
+
+func expandPlaceholders(args []string, values map[string]string) ([]string, error) {
+	expanded := make([]string, 0, len(args))
+	for _, arg := range args {
+		current := arg
+		for key, value := range values {
+			current = strings.ReplaceAll(current, key, value)
+		}
+		if strings.Contains(current, "{") && strings.Contains(current, "}") {
+			return nil, fmt.Errorf("unknown placeholder in argument %q", arg)
+		}
+		expanded = append(expanded, current)
+	}
+	return expanded, nil
+}
+
+func splitCommandLine(input string) ([]string, error) {
+	var args []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+
+	flush := func() {
+		if current.Len() > 0 {
+			args = append(args, current.String())
+			current.Reset()
+		}
+	}
+
+	for _, r := range input {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				current.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == ' ' || r == '\t' || r == '\n':
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if escaped {
+		return nil, errors.New("unfinished escape sequence")
+	}
+	if quote != 0 {
+		return nil, errors.New("unterminated quote")
+	}
+
+	flush()
+	return args, nil
 }
