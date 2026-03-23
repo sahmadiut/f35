@@ -74,7 +74,6 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o f35 .
   how long to wait before the HTTP test, in milliseconds
   this is important because the tunnel may need time to become usable
 - `-t`
-  HTTP request timeout in seconds
 - `-R`
   retry count for each resolver
 - `-l`
@@ -84,6 +83,10 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o f35 .
   full path to the tunnel client binary if it is not in `PATH`
 - `-whois`
   after a resolver works, also print resolver organization and country
+  HTTP request timeout in seconds
+- `-whois-timeout`
+  timeout in seconds for the whois lookup
+  default is `15`
 - `-json`
   print one JSON object per result line instead of plain text
 
@@ -262,9 +265,11 @@ If you pipe the output to a file or another command, colors are not printed.
 ### Output With `-whois`
 
 ```txt
-1.2.3.4:53 342ms Iran Information Technology Company PJSC Iran
-5.6.7.8:53 2140ms unknown unknown
+1.2.3.4:53 342ms org="Iran Information Technology Company PJSC" country="Iran"
+5.6.7.8:53 2140ms org="unknown" country="unknown"
 ```
+
+The `-whois` fields are labeled and quoted so organization names with spaces stay readable and unambiguous.
 
 ### Output With `-json`
 

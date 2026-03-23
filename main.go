@@ -38,6 +38,7 @@ type Config struct {
 	Retries       int
 	TunnelWait    int
 	Timeout       int
+	WhoisTimeout  int
 	StartPort     int
 }
 
@@ -150,6 +151,7 @@ func parseFlags() *Config {
 	flag.IntVar(&c.Retries, "R", 0, "Number of retries per resolver after the first failure")
 	flag.IntVar(&c.TunnelWait, "s", 1000, "Time to wait (ms) for tunnel establishment before testing HTTP")
 	flag.IntVar(&c.Timeout, "t", 5, "HTTP request timeout in seconds")
+	flag.IntVar(&c.WhoisTimeout, "whois-timeout", 15, "WHOIS lookup timeout in seconds")
 	flag.IntVar(&c.StartPort, "l", 40000, "Starting local port for tunnel listeners")
 
 	flag.Parse()
@@ -196,6 +198,9 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.Timeout < 1 {
 		return errors.New("-t must be >= 1")
+	}
+	if cfg.WhoisTimeout < 1 {
+		return errors.New("--whois-timeout must be >= 1")
 	}
 	if cfg.TunnelWait < 0 {
 		return errors.New("-s must be >= 0")
@@ -340,7 +345,7 @@ func try(resolver string, port int, cfg *Config, client *http.Client) bool {
 		return true
 	}
 
-	org, country := lookupResolverInfo(client, resolver, cfg.Timeout)
+	org, country := lookupResolverInfo(client, resolver, cfg.WhoisTimeout)
 	result.Org = org
 	result.Country = country
 	printResult(cfg, result)
@@ -354,10 +359,10 @@ func printResult(cfg *Config, result Result) {
 	}
 
 	if result.Org != "" || result.Country != "" {
-		fmt.Printf("%s %s %s %s\n", result.Resolver, formatLatency(result.LatencyMS, cfg.Colorize), result.Org, result.Country)
+		fmt.Println(formatPlainTextResult(result, cfg.Colorize, true))
 		return
 	}
-	fmt.Printf("%s %s\n", result.Resolver, formatLatency(result.LatencyMS, cfg.Colorize))
+	fmt.Println(formatPlainTextResult(result, cfg.Colorize, false))
 }
 
 func formatLatency(latencyMs int64, colorize bool) string {
@@ -374,6 +379,22 @@ func formatLatency(latencyMs int64, colorize bool) string {
 	default:
 		return "\033[31m" + latency + "\033[0m"
 	}
+}
+
+func formatPlainTextResult(result Result, colorize bool, withWhois bool) string {
+	line := fmt.Sprintf("%s %s", result.Resolver, formatLatency(result.LatencyMS, colorize))
+	if !withWhois {
+		return line
+	}
+
+	parts := []string{line}
+	if result.Org != "" {
+		parts = append(parts, "org="+strconv.Quote(result.Org))
+	}
+	if result.Country != "" {
+		parts = append(parts, "country="+strconv.Quote(result.Country))
+	}
+	return strings.Join(parts, " ")
 }
 
 func stdoutIsTerminal() bool {
