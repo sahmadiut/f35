@@ -95,9 +95,9 @@ type whoisResponse struct {
 type Result struct {
 	Resolver  string `json:"resolver"`
 	LatencyMS int64  `json:"latency_ms"`
-	Probe     bool   `json:"probe"`
-	Whois     bool   `json:"whois"`
-	Download  bool   `json:"download"`
+	Probe     string `json:"probe"`
+	Whois     string `json:"whois"`
+	Download  string `json:"download"`
 	Org       string `json:"org,omitempty"`
 	Country   string `json:"country,omitempty"`
 }
@@ -350,22 +350,27 @@ func try(resolver string, port int, cfg *Config, client *http.Client) bool {
 
 	var result Result
 	result.Resolver = resolver
+	result.Download = "off"
+	result.Whois = "off"
+	result.Probe = "off"
 
 	bestPriority := 0
 
 	if cfg.Download {
+		result.Download = "fail"
 		latency, ok := doHTTPCheck(client, cfg.DownloadURL, cfg.DownloadTimeout, true)
 		if ok {
-			result.Download = true
+			result.Download = "ok"
 			result.LatencyMS = latency
 			bestPriority = 3
 		}
 	}
 
 	if cfg.Whois {
+		result.Whois = "fail"
 		latency, org, country, ok := lookupResolverInfo(client, resolver, cfg.WhoisTimeout)
 		if ok {
-			result.Whois = true
+			result.Whois = "ok"
 			result.Org = org
 			result.Country = country
 			if bestPriority < 2 {
@@ -376,9 +381,10 @@ func try(resolver string, port int, cfg *Config, client *http.Client) bool {
 	}
 
 	if cfg.Probe {
+		result.Probe = "fail"
 		latency, ok := doHTTPCheck(client, cfg.TestURL, cfg.Timeout, false)
 		if ok {
-			result.Probe = true
+			result.Probe = "ok"
 			if bestPriority < 1 {
 				result.LatencyMS = latency
 				bestPriority = 1
@@ -422,15 +428,9 @@ func formatLatency(latencyMs int64, colorize bool) string {
 func formatPlainTextResult(result Result, colorize bool) string {
 	line := fmt.Sprintf("%s %s", result.Resolver, formatLatency(result.LatencyMS, colorize))
 	parts := []string{line}
-	if result.Download {
-		parts = append(parts, "[download]")
-	}
-	if result.Whois {
-		parts = append(parts, "[whois]")
-	}
-	if result.Probe {
-		parts = append(parts, "[probe]")
-	}
+	parts = append(parts, "download="+strconv.Quote(result.Download))
+	parts = append(parts, "whois="+strconv.Quote(result.Whois))
+	parts = append(parts, "probe="+strconv.Quote(result.Probe))
 	if result.Org != "" {
 		parts = append(parts, "org="+strconv.Quote(result.Org))
 	}

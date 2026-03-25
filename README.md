@@ -281,8 +281,8 @@ Use `-q` to silence those logs and keep only result lines on `stdout`.
 ### Normal Output
 
 ```txt
-1.2.3.4:53 342ms
-5.6.7.8:53 89ms
+1.2.3.4:53 342ms download="ok" whois="ok" probe="fail"
+5.6.7.8:53 89ms download="ok" whois="fail" probe="ok"
 ```
 
 Only usable resolvers are printed.
@@ -302,17 +302,17 @@ If you pipe the output to a file or another command, colors are not printed.
 ### Output With Checks
 
 ```txt
-1.2.3.4:53 342ms [download] [whois] org="Iran Information Technology Company PJSC" country="Iran"
-5.6.7.8:53 2140ms [probe]
+1.2.3.4:53 342ms download="ok" whois="ok" probe="fail" org="Information Technology Company PJSC" country="Iran"
+5.6.7.8:53 2140ms download="ok" whois="fail" probe="ok"
 ```
 
-The output stays `IP:PORT LATENCY`, and the tags show which checks passed.
+The output stays simple and the status fields always appear in the same order.
 
 ### Output With `-json`
 
 ```json
-{"resolver":"1.2.3.4:53","latency_ms":342,"probe":false,"whois":true,"download":true,"org":"Iran Information Technology Company PJSC","country":"Iran"}
-{"resolver":"5.6.7.8:53","latency_ms":2140,"probe":true,"whois":false,"download":false}
+{"resolver":"1.2.3.4:53","latency_ms":342,"probe":"fail","whois":"ok","download":"ok","org":"Information Technology Company PJSC","country":"Iran"}
+{"resolver":"5.6.7.8:53","latency_ms":2140,"probe":"ok","whois":"fail","download":"ok"}
 ```
 
 ## Good Defaults For New Users
