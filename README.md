@@ -77,9 +77,10 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o f35 .
   probe request timeout in seconds
 - `-probe`
   run a quick connectivity probe through the tunnel
+  enabled by default
 - `-download`
   run a real download test through the tunnel
-  enabled by default
+  optional
 - `-download-url`
   HTTP URL used for the download test
   default is `https://speed.cloudflare.com/__down?bytes=100000`
@@ -281,13 +282,13 @@ Use `-q` to silence those logs and keep only result lines on `stdout`.
 ### Normal Output
 
 ```txt
-1.2.3.4:53 342ms download="ok" whois="ok" probe="fail"
-5.6.7.8:53 89ms download="ok" whois="fail" probe="ok"
+1.2.3.4:53 342ms download="off" whois="off" probe="ok"
+5.6.7.8:53 89ms download="off" whois="off" probe="ok"
 ```
 
 Only usable resolvers are printed.
 
-A resolver is considered usable if at least one enabled check succeeds. By default, download is the primary signal.
+A resolver is considered usable if at least one enabled check succeeds. By default, probe is the primary signal.
 F35 does not require HTTP `200`.
 Even a `400` or `404` can still prove that the tunnel is working.
 
@@ -302,7 +303,7 @@ If you pipe the output to a file or another command, colors are not printed.
 ### Output With Checks
 
 ```txt
-1.2.3.4:53 342ms download="ok" whois="ok" probe="fail" org="Information Technology Company PJSC" country="Iran"
+1.2.3.4:53 342ms download="ok" whois="ok" probe="fail" org="Iran Information Technology Company PJSC" country="Iran"
 5.6.7.8:53 2140ms download="ok" whois="fail" probe="ok"
 ```
 
@@ -311,7 +312,7 @@ The output stays simple and the status fields always appear in the same order.
 ### Output With `-json`
 
 ```json
-{"resolver":"1.2.3.4:53","latency_ms":342,"probe":"fail","whois":"ok","download":"ok","org":"Information Technology Company PJSC","country":"Iran"}
+{"resolver":"1.2.3.4:53","latency_ms":342,"probe":"ok","whois":"off","download":"off"}
 {"resolver":"5.6.7.8:53","latency_ms":2140,"probe":"ok","whois":"fail","download":"ok"}
 ```
 
