@@ -13,6 +13,52 @@ It actually:
 
 This is useful when you want to find resolvers that still have outside connectivity during heavy filtering or shutdown conditions.
 
+## Install
+
+### Automatic (requires internet access)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sahmadiut/f35/main/install.sh | bash
+```
+
+Or clone the repo and run:
+
+```bash
+bash install.sh
+```
+
+### Offline / Air-gapped Server
+
+If the server has no access to GitHub or the internet, the installer will tell you:
+
+```
+[ERROR] No internet access — cannot reach GitHub.
+
+  Action required:
+
+  1. On a machine with internet, download the binary:
+
+       https://github.com/sahmadiut/f35/releases/latest/download/f35-linux-amd64
+
+  2. Transfer the file to this server, then re-run:
+
+       ./install.sh --local-file /path/to/f35-linux-amd64
+```
+
+You can pass a locally downloaded file directly:
+
+```bash
+bash install.sh --local-file /path/to/f35-linux-amd64
+```
+
+Other installer options:
+
+```bash
+bash install.sh --version v1.2.0                        # install a specific version
+bash install.sh --install-dir /usr/bin                  # custom install directory
+bash install.sh --help                                  # show all options
+```
+
 ## What Is A Resolver Here?
 
 A resolver is the DNS server IP you want to test.
@@ -42,11 +88,13 @@ You need all of these:
 ## Build
 
 ```bash
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o f35 .
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(git describe --tags)" -o f35 .
 ```
 
 ## Flags
 
+- `-v`
+  print version and exit
 - `-r`
   file that contains resolver IPs
 - `-e`
@@ -55,6 +103,13 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o f35 .
   tunnel domain
 - `-a`
   extra flags for your tunnel client, for example pubkey, timeouts, log level, or custom tuning
+- `-o`
+  output file where found resolver IPs are written (one per line)
+  default is `f35-results.txt` in the current directory
+- `-bg`
+  run in background (detaches from terminal)
+  output is redirected to the `-o` file
+  prints the background PID so you can stop it with `kill <PID>`
 - `-x`
   proxy protocol F35 uses for the request through the tunnel
   this must match what your tunnel path or server-side target expects
@@ -80,7 +135,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o f35 .
   enabled by default
 - `-download`
   run a real download test through the tunnel
-  optional
+  optional; also reports download speed (KB/s or MB/s) per resolver
 - `-download-url`
   HTTP URL used for the download test
   default is `https://speed.cloudflare.com/__down?bytes=100000`
@@ -206,11 +261,55 @@ f35 -r resolvers.txt \
 
 `-P` only works together with `-U`.
 
-### Save Only Healthy Resolvers
+### Save Found Resolvers To A Custom File
 
 ```bash
-f35 -r resolvers.txt -e dnstt -d t.example.com -x socks5h -a '-pubkey YOUR_PUBLIC_KEY' | tee healthy.txt
+f35 -r resolvers.txt -e dnstt -d t.example.com -x socks5h \
+  -a '-pubkey YOUR_PUBLIC_KEY' \
+  -o /tmp/working-resolvers.txt
 ```
+
+Found resolvers are always saved to `f35-results.txt` in the current directory by default.
+
+### Run In Background
+
+```bash
+f35 -r resolvers.txt -e dnstt -d t.example.com -x socks5h \
+  -a '-pubkey YOUR_PUBLIC_KEY' \
+  -o /tmp/working-resolvers.txt \
+  -bg
+```
+
+Output:
+
+```
+f35 is running in the background
+  PID:    38291
+  Output: /tmp/working-resolvers.txt
+
+To stop: kill 38291
+```
+
+### Run Download Test With Speed Reporting
+
+```bash
+f35 -r resolvers.txt -e dnstt -d t.example.com -x socks5h \
+  -a '-pubkey YOUR_PUBLIC_KEY' \
+  -download
+```
+
+Each working resolver prints its download speed:
+
+```
+1.2.3.4:53 342ms download="ok" speed=1.2MB/s whois="off" probe="ok"
+5.6.7.8:53 800ms download="ok" speed=87KB/s whois="off" probe="ok"
+```
+
+Speed colors on a terminal:
+
+- green: `>= 512 KB/s`
+- yellow: `128–512 KB/s`
+- red: `< 128 KB/s`
 
 ### Use A Binary That Is Not In PATH
 
@@ -279,6 +378,14 @@ That means:
 By default, scan status is printed to `stderr` with a short `scan started` and `scan finished` line.
 Use `-q` to silence those logs and keep only result lines on `stdout`.
 
+Progress is printed to `stderr` after each resolver is scanned:
+
+```
+[15/100] working=3 remaining=85
+```
+
+In terminal mode, the progress line is updated in place.
+
 ### Normal Output
 
 ```txt
@@ -300,11 +407,18 @@ Latency is colored on terminal output:
 
 If you pipe the output to a file or another command, colors are not printed.
 
+### Output With Download Speed
+
+```txt
+1.2.3.4:53 342ms download="ok" speed=1.2MB/s whois="off" probe="ok"
+5.6.7.8:53 2140ms download="ok" speed=47KB/s whois="fail" probe="ok"
+```
+
 ### Output With Checks
 
 ```txt
-1.2.3.4:53 342ms download="ok" whois="ok" probe="fail" org="Iran Information Technology Company PJSC" country="Iran"
-5.6.7.8:53 2140ms download="ok" whois="fail" probe="ok"
+1.2.3.4:53 342ms download="ok" speed=1.2MB/s whois="ok" probe="fail" org="Iran Information Technology Company PJSC" country="Iran"
+5.6.7.8:53 2140ms download="ok" speed=47KB/s whois="fail" probe="ok"
 ```
 
 The output stays simple and the status fields always appear in the same order.
@@ -312,8 +426,8 @@ The output stays simple and the status fields always appear in the same order.
 ### Output With `-json`
 
 ```json
-{"resolver":"1.2.3.4:53","latency_ms":342,"probe":"ok","whois":"off","download":"off"}
-{"resolver":"5.6.7.8:53","latency_ms":2140,"probe":"ok","whois":"fail","download":"ok"}
+{"resolver":"1.2.3.4:53","latency_ms":342,"probe":"ok","whois":"off","download":"ok","download_speed_kbps":1228.8}
+{"resolver":"5.6.7.8:53","latency_ms":2140,"probe":"ok","whois":"fail","download":"off"}
 ```
 
 ## Good Defaults For New Users

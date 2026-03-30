@@ -21,6 +21,9 @@ import (
 	"time"
 )
 
+// version is injected at build time via ldflags: -X main.version=<tag>
+var version = "dev"
+
 type Config struct {
 	Engine          string
 	ClientPath      string
@@ -28,11 +31,14 @@ type Config struct {
 	ResolversFile   string
 	TestURL         string
 	DownloadURL     string
+	OutputFile      string
 	JSON            bool
 	Quiet           bool
 	Probe           bool
 	Download        bool
 	Whois           bool
+	Background      bool
+	Version         bool
 	Proxy           string
 	ProxyUser       string
 	ProxyPass       string
@@ -93,13 +99,14 @@ type whoisResponse struct {
 }
 
 type Result struct {
-	Resolver  string `json:"resolver"`
-	LatencyMS int64  `json:"latency_ms"`
-	Probe     string `json:"probe"`
-	Whois     string `json:"whois"`
-	Download  string `json:"download"`
-	Org       string `json:"org,omitempty"`
-	Country   string `json:"country,omitempty"`
+	Resolver          string  `json:"resolver"`
+	LatencyMS         int64   `json:"latency_ms"`
+	Probe             string  `json:"probe"`
+	Whois             string  `json:"whois"`
+	Download          string  `json:"download"`
+	DownloadSpeedKBps float64 `json:"download_speed_kbps,omitempty"`
+	Org               string  `json:"org,omitempty"`
+	Country           string  `json:"country,omitempty"`
 }
 
 func main() {
@@ -112,9 +119,19 @@ func main() {
 func run() error {
 	cfg := parseFlags()
 
+	if cfg.Version {
+		fmt.Printf("f35 version %s\n", version)
+		return nil
+	}
+
 	if err := validateConfig(cfg); err != nil {
 		flag.Usage()
 		return err
+	}
+
+	// Background mode: re-exec self without -bg, redirect output to file.
+	if cfg.Background {
+		return runInBackground(cfg.OutputFile)
 	}
 
 	resolvers, err := loadResolvers(cfg.ResolversFile)
@@ -122,19 +139,39 @@ func run() error {
 		return err
 	}
 
+	total := len(resolvers)
+
+	// Open output file for saving found resolver IPs.
+	var outFile *os.File
+	var outMu sync.Mutex
+	if cfg.OutputFile != "" {
+		outFile, err = os.OpenFile(cfg.OutputFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return fmt.Errorf("cannot open output file: %w", err)
+		}
+		defer outFile.Close()
+	}
+
+	stderrTerm := stderrIsTerminal()
+
 	if !cfg.Quiet {
-		fmt.Fprintf(os.Stderr, "scan started: resolvers=%d workers=%d engine=%s\n", len(resolvers), cfg.Workers, cfg.Engine)
+		fmt.Fprintf(os.Stderr, "f35 %s | scan started: resolvers=%d workers=%d engine=%s\n",
+			version, total, cfg.Workers, cfg.Engine)
+		if cfg.OutputFile != "" {
+			fmt.Fprintf(os.Stderr, "output: %s\n", cfg.OutputFile)
+		}
 	}
 
 	jobs := make(chan string, cfg.Workers*2)
 	var wg sync.WaitGroup
 	var working atomic.Int64
+	var scanned atomic.Int64
 
 	for i := 0; i < cfg.Workers; i++ {
 		wg.Add(1)
 		go func(port int) {
 			defer wg.Done()
-			worker(port, cfg, jobs, &working)
+			worker(port, cfg, jobs, &working, &scanned, total, outFile, &outMu, stderrTerm)
 		}(cfg.StartPort + i)
 	}
 
@@ -145,14 +182,79 @@ func run() error {
 
 	wg.Wait()
 	if !cfg.Quiet {
-		fmt.Fprintf(os.Stderr, "scan finished: %d working resolvers\n", working.Load())
+		if stderrTerm {
+			fmt.Fprintf(os.Stderr, "\r\033[K")
+		}
+		fmt.Fprintf(os.Stderr, "scan finished: scanned=%d working=%d\n", total, working.Load())
 	}
+	return nil
+}
+
+// runInBackground re-executes the binary without -bg, detaches it from the
+// terminal, and redirects stdout+stderr to the output file.
+func runInBackground(outputFile string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("cannot determine executable path: %w", err)
+	}
+
+	// Build args without -bg / --bg.
+	var newArgs []string
+	for _, arg := range os.Args[1:] {
+		if arg == "-bg" || arg == "--bg" {
+			continue
+		}
+		newArgs = append(newArgs, arg)
+	}
+
+	outPath := outputFile
+	if outPath == "" {
+		outPath = "f35-results.txt"
+	}
+
+	// Make sure -o is present in the forwarded args so the child writes to file.
+	hasO := false
+	for i, a := range newArgs {
+		if a == "-o" && i+1 < len(newArgs) {
+			hasO = true
+			break
+		}
+	}
+	if !hasO {
+		newArgs = append(newArgs, "-o", outPath)
+	}
+
+	f, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("cannot open output file %s: %w", outPath, err)
+	}
+
+	cmd := exec.Command(exe, newArgs...)
+	cmd.Stdout = f
+	cmd.Stderr = f
+	cmd.Stdin = nil
+	detachProcess(cmd)
+
+	if err := cmd.Start(); err != nil {
+		f.Close()
+		return fmt.Errorf("failed to start background process: %w", err)
+	}
+
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	f.Close()
+
+	fmt.Printf("f35 is running in the background\n")
+	fmt.Printf("  PID:    %d\n", pid)
+	fmt.Printf("  Output: %s\n", outPath)
+	fmt.Printf("\nTo stop: kill %d\n", pid)
 	return nil
 }
 
 func parseFlags() *Config {
 	c := &Config{}
 
+	flag.BoolVar(&c.Version, "v", false, "Print version information and exit")
 	flag.StringVar(&c.ResolversFile, "r", "", "Path to file containing resolvers (IP or IP:PORT per line)")
 	flag.StringVar(&c.Engine, "e", "dnstt", fmt.Sprintf("Tunnel engine to use: %s", strings.Join(engineNames(), "|")))
 	flag.StringVar(&c.ClientPath, "p", "", "Explicit path to client binary (optional)")
@@ -175,6 +277,8 @@ func parseFlags() *Config {
 	flag.IntVar(&c.DownloadTimeout, "download-timeout", 5, "Download request timeout in seconds")
 	flag.IntVar(&c.WhoisTimeout, "whois-timeout", 15, "WHOIS lookup timeout in seconds")
 	flag.IntVar(&c.StartPort, "l", 40000, "Starting local port for tunnel listeners")
+	flag.StringVar(&c.OutputFile, "o", "f35-results.txt", "Output file path for found resolvers (one IP:port per line)")
+	flag.BoolVar(&c.Background, "bg", false, "Run in background (detach from terminal); output goes to -o file")
 
 	flag.Parse()
 
@@ -297,7 +401,8 @@ func formatAddr(line string) (string, bool) {
 	return net.JoinHostPort(host, port), true
 }
 
-func worker(port int, cfg *Config, jobs <-chan string, working *atomic.Int64) {
+func worker(port int, cfg *Config, jobs <-chan string, working *atomic.Int64,
+	scanned *atomic.Int64, total int, outFile *os.File, outMu *sync.Mutex, stderrTerm bool) {
 	proxyURL := &url.URL{
 		Scheme: cfg.Proxy,
 		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
@@ -320,15 +425,26 @@ func worker(port int, cfg *Config, jobs <-chan string, working *atomic.Int64) {
 
 	for resolver := range jobs {
 		for i := 0; i <= cfg.Retries; i++ {
-			if try(resolver, port, cfg, client) {
+			if try(resolver, port, cfg, client, outFile, outMu) {
 				working.Add(1)
 				break
+			}
+		}
+		s := scanned.Add(1)
+		if !cfg.Quiet {
+			w := working.Load()
+			remaining := int64(total) - s
+			progress := fmt.Sprintf("[%d/%d] working=%d remaining=%d", s, total, w, remaining)
+			if stderrTerm {
+				fmt.Fprintf(os.Stderr, "\r\033[K%s", progress)
+			} else {
+				fmt.Fprintf(os.Stderr, "%s\n", progress)
 			}
 		}
 	}
 }
 
-func try(resolver string, port int, cfg *Config, client *http.Client) bool {
+func try(resolver string, port int, cfg *Config, client *http.Client, outFile *os.File, outMu *sync.Mutex) bool {
 	args, err := buildEngineArgs(cfg, resolver, port)
 	if err != nil {
 		return false
@@ -358,11 +474,14 @@ func try(resolver string, port int, cfg *Config, client *http.Client) bool {
 
 	if cfg.Download {
 		result.Download = "fail"
-		latency, ok := doHTTPCheck(client, cfg.DownloadURL, cfg.DownloadTimeout, true)
+		latency, bytesRead, ok := doHTTPCheck(client, cfg.DownloadURL, cfg.DownloadTimeout, true)
 		if ok {
 			result.Download = "ok"
 			result.LatencyMS = latency
 			bestPriority = 3
+			if latency > 0 {
+				result.DownloadSpeedKBps = float64(bytesRead) / (float64(latency) / 1000.0) / 1024.0
+			}
 		}
 	}
 
@@ -382,7 +501,7 @@ func try(resolver string, port int, cfg *Config, client *http.Client) bool {
 
 	if cfg.Probe {
 		result.Probe = "fail"
-		latency, ok := doHTTPCheck(client, cfg.TestURL, cfg.Timeout, false)
+		latency, _, ok := doHTTPCheck(client, cfg.TestURL, cfg.Timeout, false)
 		if ok {
 			result.Probe = "ok"
 			if bestPriority < 1 {
@@ -397,6 +516,14 @@ func try(resolver string, port int, cfg *Config, client *http.Client) bool {
 	}
 
 	printResult(cfg, result)
+
+	// Save the working resolver IP to the output file.
+	if outFile != nil {
+		outMu.Lock()
+		fmt.Fprintln(outFile, resolver)
+		outMu.Unlock()
+	}
+
 	return true
 }
 
@@ -428,7 +555,11 @@ func formatLatency(latencyMs int64, colorize bool) string {
 func formatPlainTextResult(result Result, colorize bool) string {
 	line := fmt.Sprintf("%s %s", result.Resolver, formatLatency(result.LatencyMS, colorize))
 	parts := []string{line}
-	parts = append(parts, "download="+strconv.Quote(result.Download))
+	dl := "download=" + strconv.Quote(result.Download)
+	if result.Download == "ok" && result.DownloadSpeedKBps > 0 {
+		dl += fmt.Sprintf(" speed=%s", formatSpeed(result.DownloadSpeedKBps, colorize))
+	}
+	parts = append(parts, dl)
 	parts = append(parts, "whois="+strconv.Quote(result.Whois))
 	parts = append(parts, "probe="+strconv.Quote(result.Probe))
 	if result.Org != "" {
@@ -440,6 +571,26 @@ func formatPlainTextResult(result Result, colorize bool) string {
 	return strings.Join(parts, " ")
 }
 
+func formatSpeed(kbps float64, colorize bool) string {
+	var s string
+	if kbps >= 1024 {
+		s = fmt.Sprintf("%.1fMB/s", kbps/1024)
+	} else {
+		s = fmt.Sprintf("%.0fKB/s", kbps)
+	}
+	if !colorize {
+		return s
+	}
+	switch {
+	case kbps >= 512:
+		return "\033[32m" + s + "\033[0m"
+	case kbps >= 128:
+		return "\033[33m" + s + "\033[0m"
+	default:
+		return "\033[31m" + s + "\033[0m"
+	}
+}
+
 func stdoutIsTerminal() bool {
 	info, err := os.Stdout.Stat()
 	if err != nil {
@@ -448,30 +599,40 @@ func stdoutIsTerminal() bool {
 	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
-func doHTTPCheck(client *http.Client, targetURL string, timeoutSeconds int, drainBody bool) (int64, bool) {
+func stderrIsTerminal() bool {
+	info, err := os.Stderr.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func doHTTPCheck(client *http.Client, targetURL string, timeoutSeconds int, drainBody bool) (latency int64, bytesRead int64, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
 	req.Header.Set("Connection", "close")
 
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
 	defer resp.Body.Close()
 
 	if drainBody {
-		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-			return 0, false
+		n, err := io.Copy(io.Discard, resp.Body)
+		if err != nil {
+			return 0, 0, false
 		}
+		bytesRead = n
 	}
 
-	return time.Since(start).Milliseconds(), true
+	return time.Since(start).Milliseconds(), bytesRead, true
 }
 
 func lookupResolverInfo(client *http.Client, resolver string, timeoutSeconds int) (int64, string, string, bool) {
